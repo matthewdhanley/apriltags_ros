@@ -24,6 +24,19 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
+if(ODROID_CROSS_COMPILE)
+    set(C11_COMP_FLAGS "-W -pipe -O3 -mcpu=cortex-a15.cortex-a7 -mfpu=vfpv3-d16-fp16 -mfloat-abi=hard")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${C11_COMP_FLAGS}")
+else()
+    if(JETSON_CROSS_COMPILE)
+    set(C11_COMP_FLAGS "-W -pipe -O3 -mcpu=cortex-a57")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${C11_COMP_FLAGS}")
+else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+endif()
+endif()
+
+
 add_library(apriltags
   src/Edge.cc src/FloatImage.cc src/GLine2D.cc src/GLineSegment2D.cc src/Gaussian.cc src/GrayModel.cc src/Homography33.cc src/MathUtil.cc src/Quad.cc src/Segment.cc src/TagDetection.cc src/TagDetector.cc src/TagFamily.cc src/UnionFindSimple.cc
 )

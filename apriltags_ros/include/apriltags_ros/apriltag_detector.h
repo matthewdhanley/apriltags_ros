@@ -39,9 +39,23 @@ class AprilTagDetector{
   image_transport::Publisher image_pub_;
   ros::Publisher detections_pub_;
   ros::Publisher pose_pub_;
+  ros::Publisher vis_pub_;
   tf::TransformBroadcaster tf_pub_;
   boost::shared_ptr<AprilTags::TagDetector> tag_detector_;
   bool projected_optics_;
+  bool use_cam_info_;
+  double cam_fx_;
+  double cam_fy_;
+  double cam_px_;
+  double cam_py_;
+  double cam_pos_roll_;
+  double cam_pos_pitch_;
+  double cam_pos_yaw_;
+  double cam_pos_x_;
+  double cam_pos_y_;
+  double cam_pos_z_;
+  bool   simulation_;
+  bool   send_transform_;
 };
 
 

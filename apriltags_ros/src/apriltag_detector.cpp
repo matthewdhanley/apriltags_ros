@@ -15,7 +15,7 @@
 
 namespace apriltags_ros{
 
-AprilTagDetector::AprilTagDetector(ros::NodeHandle& nh, ros::NodeHandle& pnh): it_(nh){
+AprilTagDetector::AprilTagDetector(ros::NodeHandle& nh, ros::NodeHandle& pnh): it_(nh), send_transform_(false){
   XmlRpc::XmlRpcValue april_tag_descriptions;
   if(!pnh.getParam("tag_descriptions", april_tag_descriptions)){
     ROS_WARN("No april tags specified");
@@ -29,13 +29,49 @@ AprilTagDetector::AprilTagDetector(ros::NodeHandle& nh, ros::NodeHandle& pnh): i
   }
 
   if(!pnh.getParam("sensor_frame_id", sensor_frame_id_)){
-    sensor_frame_id_ = "";
+    sensor_frame_id_ = "camera::camera_link";
   }
 
   std::string tag_family;
   pnh.param<std::string>("tag_family", tag_family, "36h11");
 
   pnh.param<bool>("projected_optics", projected_optics_, false);
+
+  pnh.param<bool>("use_cam_info", use_cam_info_, false);
+
+  pnh.param<double>("cam_fx", cam_fx_, 700.0);
+  pnh.param<double>("cam_fy", cam_fy_, 700.0);
+  pnh.param<double>("cam_px", cam_px_, 320.0);
+  pnh.param<double>("cam_py", cam_py_, 240.0);
+
+  pnh.param<bool>("simulation",simulation_, false);
+
+  //! orientation defaults with respect to iris's camera in gazebo
+  pnh.param<double>("cam_position_roll",cam_pos_roll_,  0.0);
+  pnh.param<double>("cam_position_pitch",cam_pos_pitch_, 0.0);
+  pnh.param<double>("cam_position_yaw",cam_pos_yaw_,   0.0);
+  pnh.param<double>("cam_position_x",cam_pos_x_,  0.0);
+  pnh.param<double>("cam_position_y",cam_pos_y_, 0.0);
+  pnh.param<double>("cam_position_z",cam_pos_z_,   0.0);
+
+
+  ROS_INFO("Cam params: fx: %f fy: %f px: %f py: %f", cam_fx_, cam_fy_, cam_px_, cam_py_);
+  ROS_INFO("Orientation params: roll: %f pitch: %f yaw: %f ", cam_pos_roll_,
+                                                              cam_pos_pitch_,
+                                                              cam_pos_yaw_);
+
+
+  if(use_cam_info_)
+  {
+    ROS_INFO("Getting px,py,fx,fy parameters from the camera");
+  }
+
+
+  if(simulation_)
+  {
+    ROS_INFO("in simulation mode");
+  }
+
 
   const AprilTags::TagCodes* tag_codes;
   if(tag_family == "16h5"){
@@ -63,6 +99,7 @@ AprilTagDetector::AprilTagDetector(ros::NodeHandle& nh, ros::NodeHandle& pnh): i
   image_pub_ = it_.advertise("tag_detections_image", 1);
   detections_pub_ = nh.advertise<AprilTagDetectionArray>("tag_detections", 1);
   pose_pub_ = nh.advertise<geometry_msgs::PoseArray>("tag_detections_pose", 1);
+  vis_pub_  = nh.advertise<geometry_msgs::PoseStamped>("/mavros/vision_pose/pose",1);
 }
 AprilTagDetector::~AprilTagDetector(){
   image_sub_.shutdown();
@@ -86,22 +123,31 @@ void AprilTagDetector::imageCb(const sensor_msgs::ImageConstPtr& msg, const sens
   double fy;
   double px;
   double py;
-  if (projected_optics_) {
-    // use projected focal length and principal point
-    // these are the correct values
-    fx = cam_info->P[0];
-    fy = cam_info->P[5];
-    px = cam_info->P[2];
-    py = cam_info->P[6];
-  } else {
-    // use camera intrinsic focal length and principal point
-    // for backwards compatability
-    fx = cam_info->K[0];
-    fy = cam_info->K[4];
-    px = cam_info->K[2];
-    py = cam_info->K[5];
-  }
 
+  if(!use_cam_info_)
+  {
+      fx = cam_fx_;
+      fy = cam_fy_;
+      px = cam_px_;
+      py = cam_py_;
+
+  } else {
+    if (projected_optics_) {
+      // use projected focal length and principal point
+      // these are the correct values
+      fx = cam_info->P[0];
+      fy = cam_info->P[5];
+      px = cam_info->P[2];
+      py = cam_info->P[6];
+    } else {
+      // use camera intrinsic focal length and principal point
+      // for backwards compatability
+      fx = cam_info->K[0];
+      fy = cam_info->K[4];
+      px = cam_info->K[2];
+      py = cam_info->K[5];
+    }
+  }
   if(!sensor_frame_id_.empty())
     cv_ptr->header.frame_id = sensor_frame_id_;
 
@@ -120,13 +166,39 @@ void AprilTagDetector::imageCb(const sensor_msgs::ImageConstPtr& msg, const sens
 
     detection.draw(cv_ptr->image);
     Eigen::Matrix4d transform = detection.getRelativeTransform(tag_size, fx, fy, px, py);
+
+
+    Eigen::Matrix3d rott;
+    rott = Eigen::AngleAxisd(   Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitX())
+                               *Eigen::AngleAxisd(0.0 , Eigen::Vector3d::UnitY())
+                               *Eigen::AngleAxisd(M_PI/2,Eigen::Vector3d::UnitZ()));
+
+    Eigen::Vector4d T(0,0,0,1);
+    Eigen::Matrix4d transform_fcu;
+    transform_fcu.block<3,3>(0,0) = rott;
+    transform_fcu.rightCols<1>() = T;
+    transform = transform_fcu*transform;
     Eigen::Matrix3d rot = transform.block(0, 0, 3, 3);
     Eigen::Quaternion<double> rot_quaternion = Eigen::Quaternion<double>(rot);
 
+
     geometry_msgs::PoseStamped tag_pose;
-    tag_pose.pose.position.x = transform(0, 3);
-    tag_pose.pose.position.y = transform(1, 3);
-    tag_pose.pose.position.z = transform(2, 3);
+
+    transform(0, 3) = transform(0, 3)+cam_pos_x_;
+    transform(1, 3) = transform(1, 3)+cam_pos_y_;
+    transform(2, 3) = transform(2, 3)+cam_pos_z_;
+
+    if(simulation_)
+    {
+      tag_pose.pose.position.x =   transform(1, 3);
+      tag_pose.pose.position.y =  -transform(0, 3);
+      tag_pose.pose.position.z =  -transform(2, 3);
+    } else {
+      tag_pose.pose.position.x =    transform(1, 3);
+      tag_pose.pose.position.y =   -transform(0, 3);
+      tag_pose.pose.position.z =   -transform(2, 3);
+    }
+
     tag_pose.pose.orientation.x = rot_quaternion.x();
     tag_pose.pose.orientation.y = rot_quaternion.y();
     tag_pose.pose.orientation.z = rot_quaternion.z();
@@ -142,7 +214,15 @@ void AprilTagDetector::imageCb(const sensor_msgs::ImageConstPtr& msg, const sens
 
     tf::Stamped<tf::Transform> tag_transform;
     tf::poseStampedMsgToTF(tag_pose, tag_transform);
-    tf_pub_.sendTransform(tf::StampedTransform(tag_transform, tag_transform.stamp_, tag_transform.frame_id_, description.frame_name()));
+    tf_pub_.sendTransform(tf::StampedTransform(tag_transform, tag_transform.stamp_ , description.frame_name(), tag_transform.frame_id_));
+    tf::Transform fcu_transform_;
+    fcu_transform_.setOrigin( tf::Vector3(0, -0.12,  0.02) );
+    tf::Quaternion fcu_q_;
+    fcu_q_.setRPY(cam_pos_roll_ ,cam_pos_pitch_, cam_pos_yaw_);
+    fcu_transform_.setRotation(fcu_q_);
+    tf_pub_.sendTransform(tf::StampedTransform(fcu_transform_,tag_transform.stamp_, "camera::camera_link", "fcu_vision"));
+
+
   }
   detections_pub_.publish(tag_detection_array);
   pose_pub_.publish(tag_pose_array);
@@ -169,7 +249,7 @@ std::map<int, AprilTagDescription> AprilTagDetector::parse_tag_descriptions(XmlR
     }
     else{
       std::stringstream frame_name_stream;
-      frame_name_stream << "tag_" << id;
+      frame_name_stream << "tag_" << id << "__link";
       frame_name = frame_name_stream.str();
     }
     AprilTagDescription description(id, size, frame_name);
